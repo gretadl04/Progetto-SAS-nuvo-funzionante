@@ -10,35 +10,56 @@ import java.util.logging.Logger;
 
 import catering.util.LogManager;
 
-
 public class PersistenceManager {
 
     private static final Logger LOGGER = LogManager.getLogger(PersistenceManager.class);
-    private static final String DB_PATH = new File("database", "catering.db").getAbsolutePath();
-    private static final String SCRIPT_PATH = new File("database", "catering_init_sqlite.sql").getAbsolutePath();
+    private static final File DB_DIR = resolveDatabaseDir();
+    private static final String DB_PATH = new File(DB_DIR, "catering.db").getAbsolutePath();
+    private static final String SCRIPT_PATH = new File(DB_DIR, "catering_init_sqlite.sql").getAbsolutePath();
     private static final String URL = "jdbc:sqlite:" + DB_PATH;
 
     private static int lastId;
 
-    // Make constructor private to prevent instantiation
     private PersistenceManager() {
     }
 
-    // Ensure the database file exists
+    private static File resolveDatabaseDir() {
+        File direct = new File("database", "catering_init_sqlite.sql");
+        if (direct.exists()) {
+            return new File("database");
+        }
+        File nested = new File("catering/database", "catering_init_sqlite.sql");
+        if (nested.exists()) {
+            return new File("catering", "database");
+        }
+        return new File("database");
+    }
+
+    private static File resolveScriptFile(String scriptFilePath) {
+        File scriptFile = new File(scriptFilePath);
+        if (scriptFile.exists()) {
+            return scriptFile;
+        }
+        File nestedFile = new File("catering", scriptFilePath);
+        if (nestedFile.exists()) {
+            return nestedFile;
+        }
+        File fallback = new File(SCRIPT_PATH);
+        if (fallback.exists()) {
+            return fallback;
+        }
+        return scriptFile;
+    }
+
     private static void ensureDbExists() {
         File dbFile = new File(DB_PATH);
-        if (!dbFile.exists()) {
+        if (!dbFile.exists() || dbFile.length() == 0) {
             try {
-                // Create the parent directory if it doesn't exist
                 dbFile.getParentFile().mkdirs();
-
                 try (Connection conn = DriverManager.getConnection(URL)) {
                     // Connection is automatically closed by try-with-resources
                 }
-
-                // After creating the empty database, initialize it with schema
                 initializeDatabase(SCRIPT_PATH);
-
                 LOGGER.info("Database created and initialized at: " + dbFile.getAbsolutePath());
             } catch (SQLException ex) {
                 LOGGER.log(Level.SEVERE, "Failed to create database", ex);
@@ -50,28 +71,18 @@ public class PersistenceManager {
         return initializeDatabase(SCRIPT_PATH);
     }
 
-    /**
-     * Initializes the database using an SQL script file
-     * 
-     * @param scriptFilePath path to the SQL script file
-     * @return true if initialization was successful, false otherwise
-     */
-
     public static boolean initializeDatabase(String scriptFilePath) {
-        File scriptFile = new File(scriptFilePath);
+        File scriptFile = resolveScriptFile(scriptFilePath);
         if (!scriptFile.exists()) {
             LOGGER.severe("SQL script file not found: " + scriptFile.getAbsolutePath());
             return false;
         }
 
         try {
-            // Read the SQL file content
+            dbDirEnsure();
             String sqlScript = new String(Files.readAllBytes(scriptFile.toPath()), StandardCharsets.UTF_8);
-
-            // Split the script into individual statements using semicolon as delimiter
             String[] statements = sqlScript.split(";");
 
-            // Execute each statement
             try (Connection conn = DriverManager.getConnection(URL);
                  Statement stmt = conn.createStatement()) {
 
@@ -82,31 +93,30 @@ public class PersistenceManager {
                     }
                 }
 
-                LOGGER.info("Database initialized successfully from " + scriptFilePath);
+                LOGGER.info("Database initialized successfully from " + scriptFile.getAbsolutePath());
                 return true;
             }
         } catch (IOException e) {
-            LOGGER.log(Level.SEVERE, "Error reading SQL file: " + scriptFilePath, e);
+            LOGGER.log(Level.SEVERE, "Error reading SQL file: " + scriptFile.getAbsolutePath(), e);
             return false;
         } catch (SQLException e) {
-            LOGGER.log(Level.SEVERE, "Error executing SQL from file: " + scriptFilePath, e);
+            LOGGER.log(Level.SEVERE, "Error executing SQL from file: " + scriptFile.getAbsolutePath(), e);
             return false;
         }
     }
 
-    /**
-     * Executes a SQL query with parameters and processes the results with a handler
-     * 
-     * @param query   SQL query with ? placeholders for parameters
-     * @param handler ResultHandler to process each row in the result set
-     * @param params  Variable argument list of parameters to bind to the query
-     */
+    private static void dbDirEnsure() {
+        File dbFile = new File(DB_PATH);
+        if (dbFile.getParentFile() != null && !dbFile.getParentFile().exists()) {
+            dbFile.getParentFile().mkdirs();
+        }
+    }
+
     public static void executeQuery(String query, ResultHandler handler, Object... params) {
         ensureDbExists();
         try (Connection conn = DriverManager.getConnection(URL);
-                PreparedStatement ps = conn.prepareStatement(query)) {
+             PreparedStatement ps = conn.prepareStatement(query)) {
 
-            // Set parameters if any
             setParameters(ps, params);
 
             try (ResultSet rs = ps.executeQuery()) {
@@ -119,21 +129,11 @@ public class PersistenceManager {
         }
     }
 
-    /**
-     * Executes a batch update with a parameterized query
-     * 
-     * @param parametrizedQuery SQL query with ? placeholders
-     * @param itemNumber        Number of items to process in the batch
-     * @param handler           BatchUpdateHandler for setting parameters and
-     *                          handling generated keys
-     * @return Array of row counts for each batch operation
-     */
     public static int[] executeBatchUpdate(String parametrizedQuery, int itemNumber, BatchUpdateHandler handler) {
         ensureDbExists();
         int[] result = new int[0];
-        try (
-                Connection conn = DriverManager.getConnection(URL);
-                PreparedStatement ps = conn.prepareStatement(parametrizedQuery, Statement.RETURN_GENERATED_KEYS)) {
+        try (Connection conn = DriverManager.getConnection(URL);
+             PreparedStatement ps = conn.prepareStatement(parametrizedQuery, Statement.RETURN_GENERATED_KEYS)) {
             for (int i = 0; i < itemNumber; i++) {
                 handler.handleBatchItem(ps, i);
                 ps.addBatch();
@@ -153,20 +153,12 @@ public class PersistenceManager {
         return result;
     }
 
-    /**
-     * Executes an update (INSERT, UPDATE, DELETE) with parameters
-     * 
-     * @param update SQL update statement with ? placeholders
-     * @param params Variable argument list of parameters to bind to the statement
-     * @return Number of rows affected
-     */
     public static int executeUpdate(String update, Object... params) {
         ensureDbExists();
         int result = 0;
         try (Connection conn = DriverManager.getConnection(URL);
-                PreparedStatement ps = conn.prepareStatement(update, Statement.RETURN_GENERATED_KEYS)) {
+             PreparedStatement ps = conn.prepareStatement(update, Statement.RETURN_GENERATED_KEYS)) {
 
-            // Set parameters if any
             setParameters(ps, params);
 
             result = ps.executeUpdate();
@@ -183,13 +175,6 @@ public class PersistenceManager {
         return result;
     }
 
-    /**
-     * Helper method to set parameters on a PreparedStatement
-     * 
-     * @param ps     The PreparedStatement to set parameters on
-     * @param params The parameters to set
-     * @throws SQLException If there's an error setting parameters
-     */
     private static void setParameters(PreparedStatement ps, Object[] params) throws SQLException {
         for (int i = 0; i < params.length; i++) {
             if (params[i] == null) {
@@ -222,21 +207,10 @@ public class PersistenceManager {
         }
     }
 
-    /**
-     * Gets the ID generated by the last executed INSERT statement
-     * 
-     * @return The generated ID, or 0 if none was generated
-     */
     public static int getLastId() {
         return lastId;
     }
 
-    /**
-     * Gets a connection to the database
-     * 
-     * @return A new Connection to the database
-     * @throws SQLException If a database error occurs
-     */
     public static Connection getConnection() throws SQLException {
         ensureDbExists();
         return DriverManager.getConnection(URL);
