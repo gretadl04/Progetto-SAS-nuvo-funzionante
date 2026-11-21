@@ -6,23 +6,28 @@ import catering.businesslogic.event.EventReceiver;
 import catering.businesslogic.event.Service;
 import catering.businesslogic.event.StaffRequest;
 
+/**
+ * Persistence observer implementing {@link EventReceiver}.
+ * Translates domain notifications from {@link catering.businesslogic.event.EventManager}
+ * into SQLite persistence operations via the entity-level static methods.
+ */
 public class EventPersistence implements EventReceiver {
 
     @Override
     public void updateEventCreated(Event e) {
-        e.saveNewEvent();
+        Event.saveNewEvent(e);
     }
 
     @Override
     public void updateEventUpdated(Event e) {
-        e.updateEvent();
+        Event.updateEvent(e);
         if (e.isRecurring() && e.getInstances() != null) {
             for (EventInstance inst : e.getInstances()) {
                 if (inst.getId() == 0) {
                     inst.setEventId(e.getId());
-                    inst.saveNewInstance();
+                    EventInstance.saveNewInstance(inst);
                 } else {
-                    inst.updateInstance();
+                    EventInstance.updateInstance(inst);
                 }
             }
         }
@@ -30,41 +35,51 @@ public class EventPersistence implements EventReceiver {
 
     @Override
     public void updateEventDeleted(Event e) {
-        e.deleteEvent();
+        Event.deleteEvent(e);
+    }
+
+    @Override
+    public void updateEventInstanceUpdated(EventInstance ei) {
+        EventInstance.updateInstance(ei);
+    }
+
+    @Override
+    public void updateEventInstanceDeleted(EventInstance ei) {
+        EventInstance.deleteInstance(ei);
     }
 
     @Override
     public void updateServiceCreated(Event e, Service s) {
         s.setEventId(e.getId());
-        s.saveNewService();
+        Service.saveNewService(s);
     }
 
     @Override
     public void updateServiceUpdated(Service s) {
-        s.updateService();
+        Service.updateService(s);
         if (s.isMenuApproved() || s.getProposedMenuModifications() != null) {
-            s.saveMenuProposal();
+            Service.saveMenuProposal(s);
         }
     }
 
     @Override
     public void updateServiceDeleted(Event e, Service s) {
-        s.deleteService();
+        Service.deleteService(s);
     }
 
     @Override
     public void updateStaffRequested(Service s, StaffRequest sr) {
         sr.setServiceId(s.getId());
-        sr.saveNewStaffRequest();
+        StaffRequest.saveNewStaffRequest(sr);
     }
 
     @Override
     public void updateStaffRequestUpdated(Service s, StaffRequest sr) {
-        sr.updateStaffRequest();
+        StaffRequest.updateStaffRequest(sr);
     }
 
     @Override
     public void updateStaffRequestDeleted(Service s, StaffRequest sr) {
-        sr.deleteStaffRequest();
+        StaffRequest.deleteStaffRequest(sr);
     }
 }

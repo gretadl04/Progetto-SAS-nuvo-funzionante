@@ -11,7 +11,101 @@ import catering.businesslogic.user.User;
 import catering.persistence.PersistenceManager;
 import catering.persistence.ResultHandler;
 
+/**
+ * Represents a catering event managed by an Organizer and assigned to a Chef.
+ * Supports single events, multi-service events, and recurring events with
+ * individual {@link EventInstance} occurrences.
+ */
 public class Event {
+
+    /**
+     * Lifecycle states of an {@link Event} and its {@link EventInstance} occurrences.
+     * Encapsulates state-dependent business rules to avoid string-based conditionals.
+     */
+    public enum State {
+        IN_LAVORAZIONE("in lavorazione"),
+        PROGRAMMATO("programmato"),
+        IN_CORSO("in corso"),
+        TERMINATO("terminato"),
+        ANNULLATO("annullato");
+
+        private final String dbValue;
+
+        State(String dbValue) {
+            this.dbValue = dbValue;
+        }
+
+        /**
+         * Returns the string representation stored in the SQLite database.
+         *
+         * @return the database label for this state
+         */
+        public String getDbValue() {
+            return dbValue;
+        }
+
+        /**
+         * Parses a state label from database or user input.
+         *
+         * @param value the state string to parse
+         * @return the matching {@link State}, or {@code null} if unrecognized
+         */
+        public static State fromDbValue(String value) {
+            if (value == null) return null;
+            String normalized = value.trim();
+            for (State s : values()) {
+                if (s.dbValue.equalsIgnoreCase(normalized) || s.name().equalsIgnoreCase(normalized)) {
+                    return s;
+                }
+            }
+            return null;
+        }
+
+        /** @return {@code true} if the event can still be modified */
+        public boolean canBeModified() {
+            return this != TERMINATO && this != ANNULLATO;
+        }
+
+        /** @return {@code true} if new services can be added to the event */
+        public boolean canAddServices() {
+            return this == IN_LAVORAZIONE || this == PROGRAMMATO;
+        }
+
+        /** @return {@code true} if the event can be confirmed as scheduled */
+        public boolean canBeConfirmed() {
+            return this != TERMINATO && this != ANNULLATO;
+        }
+
+        /** @return {@code true} if the event can be closed as terminated */
+        public boolean canBeTerminated() {
+            return this != ANNULLATO;
+        }
+
+        /** @return {@code true} if the event can be cancelled */
+        public boolean canBeCancelled() {
+            return this != TERMINATO;
+        }
+
+        /** @return {@code true} if the event can be permanently deleted */
+        public boolean canBeDeleted() {
+            return this != IN_CORSO && this != TERMINATO;
+        }
+
+        /** @return {@code true} if approving a menu moves this event into IN_CORSO */
+        public boolean startsWorkOnMenuApproval() {
+            return this == IN_LAVORAZIONE || this == PROGRAMMATO;
+        }
+
+        /** @return {@code true} if this state represents an ongoing event */
+        public boolean isInProgress() {
+            return this == IN_CORSO;
+        }
+
+        /** @return {@code true} if this state represents a terminated event */
+        public boolean isTerminated() {
+            return this == TERMINATO;
+        }
+    }
 
     private int id;
     private String name;
@@ -24,7 +118,7 @@ public class Event {
     private ArrayList<Service> services;
 
     private String location;
-    private String state;
+    private State state;
     private String notes;
     private String documentation;
 
@@ -34,74 +128,179 @@ public class Event {
     private int recurrenceOccurrences;
     private ArrayList<EventInstance> instances;
 
+    /**
+     * Creates an empty event in the initial {@link State#IN_LAVORAZIONE} state.
+     */
     public Event() {
-        services = new ArrayList<>();
-        instances = new ArrayList<>();
-        this.state = "in lavorazione";
+        this.services = new ArrayList<>();
+        this.instances = new ArrayList<>();
+        this.state = State.IN_LAVORAZIONE;
         this.recurring = false;
     }
 
+    /**
+     * Creates a new event with the specified name.
+     *
+     * @param name the name of the event
+     */
     public Event(String name) {
         this();
         this.name = name;
     }
 
+    /** @return the database identifier of the event */
     public int getId() { return id; }
+
+    /** @param id the database identifier to set */
     public void setId(int id) { this.id = id; }
+
+    /** @return the event name */
     public String getName() { return name; }
+
+    /** @param name the event name to set */
     public void setName(String name) { this.name = name; }
+
+    /** @return the start date of the event */
     public Date getDateStart() { return dateStart; }
+
+    /** @param dateStart the start date to set */
     public void setDateStart(Date dateStart) { this.dateStart = dateStart; }
+
+    /** @return the end date of the event */
     public Date getDateEnd() { return dateEnd; }
+
+    /** @param dateEnd the end date to set */
     public void setDateEnd(Date dateEnd) { this.dateEnd = dateEnd; }
+
+    /** @return the assigned Chef, or {@code null} if unassigned */
     public User getChef() { return chef; }
+
+    /** @return the assigned Chef's ID, or {@code 0} if unassigned */
     public int getChefId() { return chef != null ? chef.getId() : 0; }
+
+    /** @param chef the Chef to assign to this event */
     public void setChef(User chef) { this.chef = chef; }
-    public void setChefId(int chefId) { this.chef = User.load(chefId); }
 
+    /** @return the Organizer managing this event, or {@code null} */
     public User getOrganizer() { return organizer; }
-    public int getOrganizerId() { return organizer != null ? organizer.getId() : 0; }
-    public void setOrganizer(User organizer) { this.organizer = organizer; }
-    public void setOrganizerId(int organizerId) { this.organizer = User.load(organizerId); }
 
+    /** @return the Organizer's ID, or {@code 0} if unassigned */
+    public int getOrganizerId() { return organizer != null ? organizer.getId() : 0; }
+
+    /** @param organizer the Organizer to assign to this event */
+    public void setOrganizer(User organizer) { this.organizer = organizer; }
+
+    /** @return the client name */
     public String getClient() { return client; }
+
+    /** @param client the client name to set */
     public void setClient(String client) { this.client = client; }
+
+    /** @return the expected number of participants */
     public int getExpectedParticipants() { return expectedParticipants; }
+
+    /** @param expectedParticipants the expected number of participants */
     public void setExpectedParticipants(int expectedParticipants) { this.expectedParticipants = expectedParticipants; }
 
+    /** @return the list of services included in this event */
     public ArrayList<Service> getServices() { return services; }
+
+    /** @param services the list of services to set */
     public void setServices(ArrayList<Service> services) { this.services = services; }
 
+    /** @return the event location */
     public String getLocation() { return location; }
+
+    /** @param location the event location to set */
     public void setLocation(String location) { this.location = location; }
-    public String getState() { return state; }
-    public void setState(String state) { this.state = state; }
+
+    /** @return the typed lifecycle state of this event */
+    public State getEventState() { return state; }
+
+    /** @return the string label of the event state */
+    public String getState() { return state != null ? state.getDbValue() : null; }
+
+    /** @param state the typed lifecycle state to set */
+    public void setState(State state) {
+        if (state != null) {
+            this.state = state;
+        }
+    }
+
+    /** @param state the string label of the state to set */
+    public void setState(String state) {
+        State parsed = State.fromDbValue(state);
+        if (parsed != null) {
+            this.state = parsed;
+        }
+    }
+
+    /** @return event notes */
     public String getNotes() { return notes; }
+
+    /** @param notes event notes to set */
     public void setNotes(String notes) { this.notes = notes; }
+
+    /** @return documentation reference attached upon event completion */
     public String getDocumentation() { return documentation; }
+
+    /** @param documentation documentation reference to set */
     public void setDocumentation(String documentation) { this.documentation = documentation; }
 
+    /** @return {@code true} if this event is recurring */
     public boolean isRecurring() { return recurring; }
+
+    /** @param recurring whether this event is recurring */
     public void setRecurring(boolean recurring) { this.recurring = recurring; }
+
+    /** @return the recurrence frequency (e.g., DAILY, WEEKLY, MONTHLY, YEARLY) */
     public String getRecurrenceFrequency() { return recurrenceFrequency; }
+
+    /** @param recurrenceFrequency the recurrence frequency to set */
     public void setRecurrenceFrequency(String recurrenceFrequency) { this.recurrenceFrequency = recurrenceFrequency; }
+
+    /** @return the recurrence end date */
     public Date getRecurrenceEnd() { return recurrenceEnd; }
+
+    /** @param recurrenceEnd the recurrence end date to set */
     public void setRecurrenceEnd(Date recurrenceEnd) { this.recurrenceEnd = recurrenceEnd; }
+
+    /** @return the total number of recurrence occurrences */
     public int getRecurrenceOccurrences() { return recurrenceOccurrences; }
+
+    /** @param recurrenceOccurrences the number of recurrence occurrences to set */
     public void setRecurrenceOccurrences(int recurrenceOccurrences) { this.recurrenceOccurrences = recurrenceOccurrences; }
+
+    /** @return the list of generated {@link EventInstance} occurrences */
     public ArrayList<EventInstance> getInstances() { return instances; }
 
+    /**
+     * Adds a service to this event if not already present.
+     *
+     * @param service the service to add
+     */
     public void addService(Service service) {
         if (services == null) services = new ArrayList<>();
-        if (!services.contains(service)) {
+        if (service != null && !services.contains(service)) {
             services.add(service);
         }
     }
 
+    /**
+     * Removes a service from this event.
+     *
+     * @param service the service to remove
+     */
     public void removeService(Service service) {
         if (services != null) services.remove(service);
     }
 
+    /**
+     * Checks whether this event includes the given service.
+     *
+     * @param service the service to check
+     * @return {@code true} if the service belongs to this event
+     */
     public boolean containsService(Service service) {
         return services != null && services.contains(service);
     }
@@ -118,25 +317,46 @@ public class Event {
         }
     }
 
-    // Generazione istanze di ricorrenza con data di fine
-    public void generateRecurrenceInstances(String frequency, Date endRecurrence) {
-        updateRecurrenceInstances(frequency, endRecurrence, null);
+    /**
+     * Generates recurrence instances up to an end date.
+     *
+     * @param frequency     the recurrence frequency
+     * @param endRecurrence the inclusive end date of the recurrence
+     * @return the list of any excess instances removed from memory
+     */
+    public ArrayList<EventInstance> generateRecurrenceInstances(String frequency, Date endRecurrence) {
+        return updateRecurrenceInstances(frequency, endRecurrence, null);
     }
 
-    // Generazione istanze di ricorrenza con numero di ripetizioni
-    public void generateRecurrenceInstances(String frequency, int occurrences) {
-        updateRecurrenceInstances(frequency, null, occurrences);
+    /**
+     * Generates a fixed number of recurrence instances.
+     *
+     * @param frequency   the recurrence frequency
+     * @param occurrences the number of occurrences to generate
+     * @return the list of any excess instances removed from memory
+     */
+    public ArrayList<EventInstance> generateRecurrenceInstances(String frequency, int occurrences) {
+        return updateRecurrenceInstances(frequency, null, occurrences);
     }
 
-    // Gestione creazione e modifica della ricorrenza preservando le istanze già in calendario
-    public void updateRecurrenceInstances(String frequency, Date endRecurrence, Integer occurrences) {
+    /**
+     * Updates recurrence instances in memory while preserving existing modified instances.
+     * Returns excess instances so the controller can notify observers for persistence.
+     *
+     * @param frequency     the recurrence frequency
+     * @param endRecurrence the recurrence end date (or {@code null} if using occurrences)
+     * @param occurrences   the occurrence count (or {@code null} if using endRecurrence)
+     * @return list of excess {@link EventInstance} objects removed from the event
+     */
+    public ArrayList<EventInstance> updateRecurrenceInstances(String frequency, Date endRecurrence, Integer occurrences) {
+        ArrayList<EventInstance> removedInstances = new ArrayList<>();
         this.recurring = true;
         this.recurrenceFrequency = frequency;
         this.recurrenceEnd = endRecurrence;
         this.recurrenceOccurrences = (occurrences != null) ? occurrences : 0;
 
-        if (this.dateStart == null) return;
-        if (endRecurrence == null && (occurrences == null || occurrences <= 0)) return;
+        if (this.dateStart == null) return removedInstances;
+        if (endRecurrence == null && (occurrences == null || occurrences <= 0)) return removedInstances;
 
         ArrayList<Date> targetDates = new ArrayList<>();
         Calendar cal = Calendar.getInstance();
@@ -157,7 +377,6 @@ public class Event {
             }
         }
 
-        // Conserva le istanze già esistenti in calendario prima della modifica
         ArrayList<EventInstance> updatedInstances = new ArrayList<>();
         for (int i = 0; i < targetDates.size(); i++) {
             Date targetDate = targetDates.get(i);
@@ -174,55 +393,73 @@ public class Event {
             }
         }
 
-        // Elimina dal DB eventuali istanze di troppo
         for (int i = targetDates.size(); i < this.instances.size(); i++) {
-            EventInstance excess = this.instances.get(i);
-            if (excess.getId() > 0) {
-                excess.deleteInstance();
-            }
+            removedInstances.add(this.instances.get(i));
         }
 
         this.instances = updatedInstances;
+        return removedInstances;
     }
 
-    // Operazioni Database
-    public void saveNewEvent() {
+    // STATIC PERSISTENCE METHODS (called by EventPersistence observer)
+
+    /**
+     * Persists a newly created event and any initial recurrence instances to the database.
+     *
+     * @param e the event to persist
+     */
+    public static void saveNewEvent(Event e) {
         String query = "INSERT INTO Events (name, date_start, date_end, chef_id, organizer_id, client, expected_participants, location, state, notes, documentation, is_recurring, recurrence_frequency, recurrence_end, recurrence_occurrences) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-        String dStart = (dateStart != null) ? dateStart.toString() : null;
-        String dEnd = (dateEnd != null) ? dateEnd.toString() : null;
-        String rEnd = (recurrenceEnd != null) ? recurrenceEnd.toString() : null;
+        String dStart = (e.dateStart != null) ? e.dateStart.toString() : null;
+        String dEnd = (e.dateEnd != null) ? e.dateEnd.toString() : null;
+        String rEnd = (e.recurrenceEnd != null) ? e.recurrenceEnd.toString() : null;
 
-        PersistenceManager.executeUpdate(query, name, dStart, dEnd, getChefId(), getOrganizerId(), client, expectedParticipants, location, state, notes, documentation, recurring ? 1 : 0, recurrenceFrequency, rEnd, recurrenceOccurrences);
-        id = PersistenceManager.getLastId();
+        PersistenceManager.executeUpdate(query, e.name, dStart, dEnd, e.getChefId(), e.getOrganizerId(),
+                e.client, e.expectedParticipants, e.location, e.getState(), e.notes, e.documentation,
+                e.recurring ? 1 : 0, e.recurrenceFrequency, rEnd, e.recurrenceOccurrences);
+        e.id = PersistenceManager.getLastId();
 
-        for (EventInstance ei : instances) {
-            ei.setEventId(this.id);
-            ei.saveNewInstance();
+        for (EventInstance ei : e.instances) {
+            ei.setEventId(e.id);
+            EventInstance.saveNewInstance(ei);
         }
     }
 
-    public void updateEvent() {
+    /**
+     * Updates an existing event record in the database.
+     *
+     * @param e the event to update
+     */
+    public static void updateEvent(Event e) {
         String query = "UPDATE Events SET name = ?, date_start = ?, date_end = ?, chef_id = ?, organizer_id = ?, client = ?, expected_participants = ?, location = ?, state = ?, notes = ?, documentation = ?, is_recurring = ?, recurrence_frequency = ?, recurrence_end = ?, recurrence_occurrences = ? WHERE id = ?";
-        String dStart = (dateStart != null) ? dateStart.toString() : null;
-        String dEnd = (dateEnd != null) ? dateEnd.toString() : null;
-        String rEnd = (recurrenceEnd != null) ? recurrenceEnd.toString() : null;
+        String dStart = (e.dateStart != null) ? e.dateStart.toString() : null;
+        String dEnd = (e.dateEnd != null) ? e.dateEnd.toString() : null;
+        String rEnd = (e.recurrenceEnd != null) ? e.recurrenceEnd.toString() : null;
 
-        PersistenceManager.executeUpdate(query, name, dStart, dEnd, getChefId(), getOrganizerId(), client, expectedParticipants, location, state, notes, documentation, recurring ? 1 : 0, recurrenceFrequency, rEnd, recurrenceOccurrences, id);
+        PersistenceManager.executeUpdate(query, e.name, dStart, dEnd, e.getChefId(), e.getOrganizerId(),
+                e.client, e.expectedParticipants, e.location, e.getState(), e.notes, e.documentation,
+                e.recurring ? 1 : 0, e.recurrenceFrequency, rEnd, e.recurrenceOccurrences, e.id);
     }
 
-    public boolean deleteEvent() {
-        for (Service service : services) {
-            service.deleteService();
+    /**
+     * Deletes an event along with all its associated services and recurrence instances.
+     *
+     * @param e the event to delete
+     * @return {@code true} if the event row was deleted from the database
+     */
+    public static boolean deleteEvent(Event e) {
+        for (Service service : new ArrayList<>(e.services)) {
+            Service.deleteService(service);
         }
-        services.clear();
+        e.services.clear();
 
-        for (EventInstance ei : instances) {
-            ei.deleteInstance();
+        for (EventInstance ei : new ArrayList<>(e.instances)) {
+            EventInstance.deleteInstance(ei);
         }
-        instances.clear();
+        e.instances.clear();
 
         String query = "DELETE FROM Events WHERE id = ?";
-        return PersistenceManager.executeUpdate(query, id) > 0;
+        return PersistenceManager.executeUpdate(query, e.id) > 0;
     }
 
     private static Date parseSqlDate(ResultSet rs, String col) throws SQLException {
@@ -239,14 +476,18 @@ public class Event {
         }
     }
 
+    /**
+     * Loads all events from the database ordered by start date descending.
+     *
+     * @return list of all persisted events
+     */
     public static ArrayList<Event> loadAllEvents() {
         ArrayList<Event> events = new ArrayList<>();
         String query = "SELECT * FROM Events ORDER BY date_start DESC";
         PersistenceManager.executeQuery(query, new ResultHandler() {
             @Override
             public void handle(ResultSet rs) throws SQLException {
-                Event e = mapRowToEvent(rs);
-                events.add(e);
+                events.add(mapRowToEvent(rs));
             }
         });
 
@@ -257,11 +498,23 @@ public class Event {
         return events;
     }
 
+    /**
+     * Loads an event by its database identifier.
+     *
+     * @param id the event ID
+     * @return the loaded {@link Event}, or {@code null} if not found
+     */
     public static Event loadById(int id) {
         String query = "SELECT * FROM Events WHERE id = ?";
         return loadEventByQuery(query, id);
     }
 
+    /**
+     * Loads an event by its exact name.
+     *
+     * @param name the event name
+     * @return the loaded {@link Event}, or {@code null} if not found
+     */
     public static Event loadByName(String name) {
         String query = "SELECT * FROM Events WHERE name = ?";
         return loadEventByQuery(query, name);
@@ -274,7 +527,10 @@ public class Event {
         e.dateStart = parseSqlDate(rs, "date_start");
         e.dateEnd = parseSqlDate(rs, "date_end");
         try { e.location = rs.getString("location"); } catch (SQLException ignore) {}
-        try { e.state = rs.getString("state"); } catch (SQLException ignore) {}
+        try {
+            State parsed = State.fromDbValue(rs.getString("state"));
+            if (parsed != null) e.state = parsed;
+        } catch (SQLException ignore) {}
         try { e.notes = rs.getString("notes"); } catch (SQLException ignore) {}
         try { e.documentation = rs.getString("documentation"); } catch (SQLException ignore) {}
         try { e.client = rs.getString("client"); } catch (SQLException ignore) {}
@@ -344,7 +600,7 @@ public class Event {
 
     @Override
     public String toString() {
-        return "Event [id=" + id + ", name=" + name + ", location=" + location + ", state=" + state +
+        return "Event [id=" + id + ", name=" + name + ", location=" + location + ", state=" + getState() +
                 ", services=" + (services != null ? services.size() : 0) + "]";
     }
 }
